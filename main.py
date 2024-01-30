@@ -2,14 +2,17 @@ import os, math
 import wandb
 import hydra as hy
 from omegaconf import DictConfig, OmegaConf
+from contextlib import contextmanager, nullcontext
 
 import torch as th
 from torchvision import transforms, utils as tv_utils
 from lightning.pytorch import loggers, callbacks, Trainer, LightningModule
 from torchmetrics.image.fid import FrechetInceptionDistance
-from torch_ema import ExponentialMovingAverage as EMA
 
-from utils import PipelineCheckpoint
+from utils import (
+    PipelineCheckpoint,
+    EMACallback
+)
 from dm import ImageDatasets
 
 from diffusers import (
@@ -30,15 +33,11 @@ class Diffusion(LightningModule):
 
         self.model = UNet2DModel(**OmegaConf.to_container(self.config.model))
         self.scheduler = DDPMScheduler(**OmegaConf.to_container(self.config.training.scheduler))
-        self.ema = EMA(*self.model.parameters(), decay = self.config.training.ema_decay)
 
         self.fid = FrechetInceptionDistance(normalize=True, reset_real_features=False)
 
         self.save_hyperparameters(self.config)
-        
-    def on_fit_start(self) -> None:
-        return super().on_fit_start()
-    
+
     def record_real_data_for_FID(self, batch):
         if self.current_epoch == 0:
             self.fid.update(batch, real = True)
@@ -74,13 +73,20 @@ class Diffusion(LightningModule):
         }, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
         return loss
     
+    @contextmanager
+    def maybe_ema(self):
+        ema = self.ema # The EMACallback() ensures this
+        ctx = nullcontext if ema is None else ema.average_parameters
+        yield ctx
+    
     def sample(self, n = 32):
-        images, = self.pipe(
-            batch_size=n,
-            num_inference_steps=self.config.inference.num_inference_steps,
-            output_type="numpy",
-            return_dict=False
-        )
+        with self.maybe_ema():
+            images, = self.pipe(
+                batch_size=n,
+                num_inference_steps=self.config.inference.num_inference_steps,
+                output_type="numpy",
+                return_dict=False
+            )
         return th.from_numpy(images).permute(0, 3, 1, 2).to(self.device)
     
     def create_hf_pipeline(self):
@@ -130,7 +136,8 @@ def main(cfg: DictConfig):
         num_sanity_val_steps = 0,
         callbacks = [
             callbacks.LearningRateMonitor('epoch', log_momentum=True, log_weight_decay=True),
-            PipelineCheckpoint()
+            PipelineCheckpoint(),
+            EMACallback(decay=cfg.training.ema_decay)
         ],
         logger = loggers.WandbLogger(
             settings = wandb.Settings(_disable_stats = True, _disable_meta = True),

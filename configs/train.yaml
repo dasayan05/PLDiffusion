@@ -41,7 +41,7 @@ training:
   batch_size: 128
   learning_rate: 1.e-4
   epochs: 3000
-  ema_decay: 0.9999
+  ema_decay: 0.9999 # `-1` disables it
   scheduler:
     timestep_spacing: trailing
     variance_type: fixed_large
