@@ -115,7 +115,7 @@ class Diffusion(LightningModule):
         }
     
 
-@hy.main(version_base=None, config_path='./config')
+@hy.main(version_base=None, config_path='./configs')
 def main(cfg: DictConfig):
     OmegaConf.resolve(cfg) # resolve all string interpolation
 
