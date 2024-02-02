@@ -1,4 +1,6 @@
 import os, math
+from itertools import chain
+
 import wandb
 import hydra as hy
 from omegaconf import DictConfig, OmegaConf
@@ -11,7 +13,9 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 
 from utils import (
     PipelineCheckpoint,
-    EMACallback
+    EMACallback,
+    _fix_hydra_config_serialization,
+    ConfigMixin
 )
 from dm import ImageDatasets
 
@@ -27,17 +31,26 @@ to_tensor = transforms.ToTensor()
 
 
 class Diffusion(LightningModule):
-    def __init__(self, config: DictConfig):
+    def __init__(self,
+                 model_cfg: DictConfig,
+                 training_cfg: DictConfig,
+                 inference_cfg: DictConfig
+                 ):
         super().__init__()
-        self.config = config
 
-        self.model = UNet2DModel(**OmegaConf.to_container(self.config.model))
-        self.scheduler = DDPMScheduler(**OmegaConf.to_container(self.config.training.scheduler))
+        self.training_cfg = training_cfg
+        self.inference_cfg = inference_cfg
+
+        self.model = hy.utils.instantiate(model_cfg)
+        self.scheduler = hy.utils.instantiate(self.training_cfg.scheduler)
 
         self.fid = FrechetInceptionDistance(normalize=True, reset_real_features=False)
-
-        self.save_hyperparameters(self.config)
-
+    
+    def on_fit_start(self) -> None:
+        for child in chain(self.children(), vars(self).values()):
+            if isinstance(child, ConfigMixin):
+                _fix_hydra_config_serialization(child)
+    
     def record_real_data_for_FID(self, batch):
         if self.current_epoch == 0:
             self.fid.update(batch, real = True)
@@ -83,7 +96,7 @@ class Diffusion(LightningModule):
         with self.maybe_ema():
             images, = self.pipe(
                 batch_size=n,
-                num_inference_steps=self.config.inference.num_inference_steps,
+                num_inference_steps=self.inference_cfg.num_inference_steps,
                 output_type="numpy",
                 return_dict=False
             )
@@ -96,11 +109,11 @@ class Diffusion(LightningModule):
     def on_validation_epoch_end(self) -> None:
         self.create_hf_pipeline()
 
-        n_per_rank = math.ceil(self.config.inference.num_samples / self.trainer.world_size)
-        n_batches_per_rank = math.ceil(n_per_rank / self.config.inference.batch_size)
+        n_per_rank = math.ceil(self.inference_cfg.num_samples / self.trainer.world_size)
+        n_batches_per_rank = math.ceil(n_per_rank / self.inference_cfg.batch_size)
         # TODO: This may end up accummulating a little more than given 'n_samples'
         for _ in range(n_batches_per_rank):
-            images = self.sample(n = self.config.inference.batch_size)
+            images = self.sample(n = self.inference_cfg.batch_size)
             self.fid.update(images, real = False)
         
         fid = self.fid.compute()
@@ -108,12 +121,12 @@ class Diffusion(LightningModule):
         self.fid.reset()
         
         if self.global_rank == 0:
-            image_grid = tv_utils.make_grid(images, nrow=math.ceil(self.config.inference.batch_size ** 0.5), padding=1)
+            image_grid = tv_utils.make_grid(images, nrow=math.ceil(self.inference_cfg.batch_size ** 0.5), padding=1)
             tv_utils.save_image(image_grid,
                     os.path.join(self.logger.experiment.dir, f'samples_epoch_{self.current_epoch}.png'))
     
     def configure_optimizers(self):
-        optim = th.optim.AdamW(self.parameters(), lr=self.config.training.learning_rate)
+        optim = th.optim.AdamW(self.parameters(), lr=self.training_cfg.learning_rate)
         sched = th.optim.lr_scheduler.StepLR(optim, 1, gamma=0.99)
         return {
             'optimizer': optim,
@@ -125,23 +138,20 @@ class Diffusion(LightningModule):
 def main(cfg: DictConfig):
     OmegaConf.resolve(cfg) # resolve all string interpolation
 
-    system = Diffusion(cfg)
+    system = Diffusion(cfg.model, cfg.training, cfg.inference)
     datamodule = ImageDatasets(cfg.data)
 
     trainer = Trainer(
         accelerator = 'gpu',
         num_nodes = 1,
         benchmark = True,
-        strategy = 'ddp',
-        num_sanity_val_steps = 0,
         callbacks = [
             callbacks.LearningRateMonitor('epoch', log_momentum=True, log_weight_decay=True),
             PipelineCheckpoint(),
             EMACallback(decay=cfg.training.ema_decay)
         ],
-        logger = loggers.WandbLogger(
-            settings = wandb.Settings(_disable_stats = True, _disable_meta = True),
-            **OmegaConf.to_container(cfg.logging)
+        logger = hy.utils.instantiate(cfg.logger, _partial_=True)(
+            settings = wandb.Settings(_disable_stats = True, _disable_meta = True)
         ),
         **OmegaConf.to_container(cfg.pl_trainer)
     )

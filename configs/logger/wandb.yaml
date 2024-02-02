@@ -1,0 +1,5 @@
+_target_: lightning.pytorch.loggers.WandbLogger
+project: "diffusion-mtk"
+entity: "dasayan05"
+save_dir: "./logs"
+offline: false

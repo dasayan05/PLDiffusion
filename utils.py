@@ -3,6 +3,11 @@ import os.path as osp
 from torch_ema import ExponentialMovingAverage as EMA
 from lightning.pytorch import LightningModule, Trainer, callbacks
 from diffusers.pipelines import DiffusionPipeline
+from diffusers.configuration_utils import ConfigMixin
+
+from omegaconf.listconfig import ListConfig
+from omegaconf.dictconfig import DictConfig
+from diffusers.configuration_utils import FrozenDict
 
 class PipelineCheckpoint(callbacks.ModelCheckpoint):
 
@@ -55,3 +60,16 @@ class EMACallback(callbacks.Callback):
             pl_module.ema.update(pl_module.parameters())
 
         return super().on_before_zero_grad(trainer, pl_module, optimizer)
+
+
+def _fix_hydra_config_serialization(conf_mixin: ConfigMixin):
+    # This is a hack due to incompatibility between hydra and diffusers
+    new_internal_dict = { }
+    for k, v in conf_mixin._internal_dict.items():
+        if isinstance(v, ListConfig):
+            new_internal_dict[k] = list(v)
+        elif isinstance(v, DictConfig):
+            new_internal_dict[k] = dict(v)
+        else:
+            new_internal_dict[k] = v
+    conf_mixin._internal_dict = FrozenDict(new_internal_dict)
