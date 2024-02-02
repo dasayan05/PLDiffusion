@@ -9,6 +9,7 @@ from omegaconf.listconfig import ListConfig
 from omegaconf.dictconfig import DictConfig
 from diffusers.configuration_utils import FrozenDict
 
+
 class PipelineCheckpoint(callbacks.ModelCheckpoint):
 
     def on_save_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint) -> None:
@@ -31,11 +32,11 @@ class EMACallback(callbacks.Callback):
 
         # EMA decay hyper parameter
         self.decay = decay
-    
+
     @property
     def ema_wanted(self):
         return (self.decay != -1)
-    
+
     def setup(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
         if self.ema_wanted:
             pl_module.ema = EMA(pl_module.parameters(), decay=self.decay)
@@ -48,13 +49,13 @@ class EMACallback(callbacks.Callback):
             checkpoint['ema'] = pl_module.ema.state_dict()
 
         return super().on_save_checkpoint(trainer, pl_module, checkpoint)
-    
+
     def on_load_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint: dict) -> None:
         if self.ema_wanted:
             pl_module.ema.load_state_dict(checkpoint['ema'])
 
         return super().on_load_checkpoint(trainer, pl_module, checkpoint)
-    
+
     def on_before_zero_grad(self, trainer: Trainer, pl_module: LightningModule, optimizer) -> None:
         if self.ema_wanted:
             pl_module.ema.update(pl_module.parameters())
@@ -64,7 +65,7 @@ class EMACallback(callbacks.Callback):
 
 def _fix_hydra_config_serialization(conf_mixin: ConfigMixin):
     # This is a hack due to incompatibility between hydra and diffusers
-    new_internal_dict = { }
+    new_internal_dict = {}
     for k, v in conf_mixin._internal_dict.items():
         if isinstance(v, ListConfig):
             new_internal_dict[k] = list(v)
