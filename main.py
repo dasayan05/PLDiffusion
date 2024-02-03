@@ -156,7 +156,8 @@ def main(cfg: DictConfig):
             callbacks.LearningRateMonitor(
                 'epoch', log_momentum=True, log_weight_decay=True),
             PipelineCheckpoint(),
-            EMACallback(decay=cfg.training.ema_decay)
+            EMACallback(decay=cfg.training.ema_decay),
+            callbacks.RichProgressBar()
         ],
         logger=hy.utils.instantiate(cfg.logger, _partial_=True)(
             settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
