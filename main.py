@@ -159,9 +159,7 @@ def main(cfg: DictConfig):
             EMACallback(decay=cfg.training.ema_decay),
             callbacks.RichProgressBar()
         ],
-        logger=hy.utils.instantiate(cfg.logger, _partial_=True)(
-            settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
-        ),
+        logger=hy.utils.instantiate(cfg.logger, _recursive_=True),
         **OmegaConf.to_container(cfg.pl_trainer)
     )
     trainer.fit(system, datamodule=datamodule,
