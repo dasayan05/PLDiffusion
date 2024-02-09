@@ -93,12 +93,14 @@ class Diffusion(LightningModule):
         ctx = nullcontext if ema is None else ema.average_parameters
         yield ctx
 
-    def sample(self, pipeline: DiffusionPipeline, **kwargs: dict):
+    def sample(self, **kwargs: dict):
         kwargs.pop('output_type', None)
         kwargs.pop('return_dict', False)
 
+        pipe = self.pipeline()
+
         with self.maybe_ema():
-            images, = pipeline(
+            images, = pipe(
                 **kwargs,
                 output_type="pil",
                 return_dict=False
@@ -117,8 +119,6 @@ class Diffusion(LightningModule):
                              push_to_hub=push_to_hub)
 
     def on_validation_epoch_end(self) -> None:
-        pipe = self.pipeline()
-
         batch_size = self.inference_cfg.pipeline_kwargs.get(
             'batch_size', self.training_cfg.batch_size * 2)
 
@@ -130,7 +130,6 @@ class Diffusion(LightningModule):
         # TODO: This may end up accummulating a little more than given 'n_samples'
         for _ in range(n_batches_per_rank):
             pil_images = self.sample(
-                pipe,
                 **self.inference_cfg.pipeline_kwargs
             )
             images = th.stack([to_tensor(pil_image)
