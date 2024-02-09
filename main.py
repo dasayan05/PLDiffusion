@@ -58,7 +58,7 @@ class Diffusion(LightningModule):
     def ema_wanted(self):
         return self.training_cfg.ema_decay != -1
 
-    def on_fit_start(self) -> None:
+    def _fix_hydra_config_serialization(self) -> None:
         for child in chain(self.children(), vars(self).values()):
             if isinstance(child, ConfigMixin):
                 _fix_hydra_config_serialization(child)
@@ -143,6 +143,8 @@ class Diffusion(LightningModule):
         return pipe
 
     def save_pretrained(self, path: str, push_to_hub: bool = False):
+        self._fix_hydra_config_serialization()
+        
         pipe = self.pipeline()
         pipe.save_pretrained(path, safe_serialization=True,
                              push_to_hub=push_to_hub)
