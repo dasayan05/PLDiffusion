@@ -2,7 +2,6 @@ import os.path as osp
 
 from torch_ema import ExponentialMovingAverage as EMA
 from lightning.pytorch import LightningModule, Trainer, callbacks
-from diffusers.pipelines import DiffusionPipeline
 from diffusers.configuration_utils import ConfigMixin
 
 from omegaconf.listconfig import ListConfig
@@ -19,8 +18,7 @@ class PipelineCheckpoint(callbacks.ModelCheckpoint):
                 osp.dirname(self.best_model_path),
                 f'pipeline-{pl_module.current_epoch}'
             )
-            pipe: DiffusionPipeline = pl_module.pipe
-            pipe.save_pretrained(pipe_path)
+            pl_module.save_pretrained(pipe_path)
 
         return super().on_save_checkpoint(trainer, pl_module, checkpoint)
 

@@ -1,9 +1,9 @@
 defaults:
-  - model: diffusers_native
+  - model@models.unet: better_cifar10 # diffusers_native
   - data: cifar10
   - scheduler@training.scheduler: ddpm
   - scheduler@inference.scheduler: ddpm
-  - logger: wandb
+  - logger: tb
   - _self_
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
@@ -16,6 +16,9 @@ hydra:
 resume_from_checkpoint: null
 
 pl_trainer:
+  accelerator: gpu
+  num_nodes: 1
+  benchmark: true
   precision: "16-mixed"
   strategy: ddp
   num_sanity_val_steps: 0
@@ -25,14 +28,21 @@ pl_trainer:
   check_val_every_n_epoch: 10
   devices: -1
 
+models:
+  unet:
+    sample_size: 32
+
 data:
   image_resolution: 32
   batch_size: ${training.batch_size}
 
 inference:
-  batch_size: 256
-  num_inference_steps: 1000
-  num_samples: 1024
+  num_samples: 1024 # or 50,000
+  scheduler:
+    clip_sample: true
+  pipeline_kwargs:
+    batch_size: 256
+    num_inference_steps: 1000
 
 training:
   batch_size: 128

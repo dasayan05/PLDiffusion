@@ -2,14 +2,13 @@ import os
 import math
 from itertools import chain
 
-import wandb
 import hydra as hy
 from omegaconf import DictConfig, OmegaConf
 from contextlib import contextmanager, nullcontext
 
 import torch as th
 from torchvision import transforms, utils as tv_utils
-from lightning.pytorch import loggers, callbacks, Trainer, LightningModule
+from lightning.pytorch import callbacks, Trainer, LightningModule
 from torchmetrics.image.fid import FrechetInceptionDistance
 
 from utils import (
@@ -20,11 +19,8 @@ from utils import (
 )
 from dm import ImageDatasets
 
-from diffusers import (
-    UNet2DModel,
-    DDPMScheduler,
-    DDPMPipeline
-)
+from diffusers import DDPMPipeline
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 
 # some global stuff necessary for the program
 th.set_float32_matmul_precision('medium')
@@ -33,7 +29,7 @@ to_tensor = transforms.ToTensor()
 
 class Diffusion(LightningModule):
     def __init__(self,
-                 model_cfg: DictConfig,
+                 models_cfg: DictConfig,
                  training_cfg: DictConfig,
                  inference_cfg: DictConfig
                  ):
@@ -42,11 +38,16 @@ class Diffusion(LightningModule):
         self.training_cfg = training_cfg
         self.inference_cfg = inference_cfg
 
-        self.model = hy.utils.instantiate(model_cfg)
-        self.scheduler = hy.utils.instantiate(self.training_cfg.scheduler)
+        self.model = hy.utils.instantiate(models_cfg.unet)
+        self.train_scheduler = \
+            hy.utils.instantiate(self.training_cfg.scheduler)
+        self.infer_scheduler = \
+            hy.utils.instantiate(self.inference_cfg.scheduler)
 
         self.fid = FrechetInceptionDistance(
             normalize=True, reset_real_features=False)
+
+        self.save_hyperparameters()
 
     def on_fit_start(self) -> None:
         for child in chain(self.children(), vars(self).values()):
@@ -65,28 +66,26 @@ class Diffusion(LightningModule):
         noise = th.randn_like(clean_images)
         timesteps = th.randint(
             low=0,
-            high=self.scheduler.config.num_train_timesteps,
+            high=self.train_scheduler.config.num_train_timesteps,
             size=(clean_images.size(0), ), device=self.device
         ).long()
-        noisy_images = self.scheduler.add_noise(clean_images, noise, timesteps)
+        noisy_images = self.train_scheduler.add_noise(
+            clean_images, noise, timesteps)
 
         # Predict the noise residual
         model_output = self.model(noisy_images, timesteps).sample
         loss = th.nn.functional.mse_loss(model_output, noise)
 
-        if self.training:
-            self.log_dict({
-                'train/simple_loss': loss
-            }, prog_bar=True, sync_dist=True, on_step=True, on_epoch=False)
+        log_key = f'{"train" if self.training else "val"}/simple_loss'
+        self.log_dict({log_key: loss},
+                      prog_bar=True, sync_dist=True,
+                      on_step=self.training,
+                      on_epoch=not self.training)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
-        loss = self.training_step(batch, batch_idx)
-        self.log_dict({
-            'val/simple_loss': loss
-        }, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
-        return loss
+        return self.training_step(batch, batch_idx)
 
     @contextmanager
     def maybe_ema(self):
@@ -94,42 +93,65 @@ class Diffusion(LightningModule):
         ctx = nullcontext if ema is None else ema.average_parameters
         yield ctx
 
-    def sample(self, n=32):
+    def sample(self, pipeline: DiffusionPipeline, **kwargs: dict):
+        kwargs.pop('output_type', None)
+        kwargs.pop('return_dict', False)
+
         with self.maybe_ema():
-            images, = self.pipe(
-                batch_size=n,
-                num_inference_steps=self.inference_cfg.num_inference_steps,
-                output_type="numpy",
+            images, = pipeline(
+                **kwargs,
+                output_type="pil",
                 return_dict=False
             )
-        return th.from_numpy(images).permute(0, 3, 1, 2).to(self.device)
+        return images
 
-    def create_hf_pipeline(self):
-        self.pipe = DDPMPipeline(self.model, self.scheduler).to(
-            device=self.device, dtype=self.dtype)
-        self.pipe.set_progress_bar_config(disable=True)
+    def pipeline(self) -> DiffusionPipeline:
+        pipe = DDPMPipeline(self.model, self.infer_scheduler).to(
+            device=self.device, dtype=self.dtype)  # .to() isn't necessary
+        pipe.set_progress_bar_config(disable=True)
+        return pipe
+
+    def save_pretrained(self, path: str, push_to_hub: bool = False):
+        pipe = self.pipeline()
+        pipe.save_pretrained(path, safe_serialization=True,
+                             push_to_hub=push_to_hub)
 
     def on_validation_epoch_end(self) -> None:
-        self.create_hf_pipeline()
+        pipe = self.pipeline()
+
+        batch_size = self.inference_cfg.pipeline_kwargs.get(
+            'batch_size', self.training_cfg.batch_size * 2)
 
         n_per_rank = math.ceil(
             self.inference_cfg.num_samples / self.trainer.world_size)
         n_batches_per_rank = math.ceil(
-            n_per_rank / self.inference_cfg.batch_size)
+            n_per_rank / batch_size)
+
         # TODO: This may end up accummulating a little more than given 'n_samples'
         for _ in range(n_batches_per_rank):
-            images = self.sample(n=self.inference_cfg.batch_size)
-            self.fid.update(images, real=False)
+            pil_images = self.sample(
+                pipe,
+                **self.inference_cfg.pipeline_kwargs
+            )
+            images = th.stack([to_tensor(pil_image)
+                              for pil_image in pil_images], 0)
+            self.fid.update(images.to(dtype=self.dtype, device=self.device),
+                            real=False)
 
         fid = self.fid.compute()
         self.log('FID', fid, prog_bar=True, on_epoch=True, sync_dist=True)
         self.fid.reset()
 
         if self.global_rank == 0:
-            image_grid = tv_utils.make_grid(images, nrow=math.ceil(
-                self.inference_cfg.batch_size ** 0.5), padding=1)
+            image_grid = tv_utils.make_grid(images,
+                                            nrow=math.ceil(batch_size ** 0.5), padding=1)
+            try:
+                saving_dir = self.logger.experiment.dir  # for wandb
+            except AttributeError:
+                saving_dir = self.logger.experiment.log_dir  # for TB
+
             tv_utils.save_image(image_grid,
-                                os.path.join(self.logger.experiment.dir, f'samples_epoch_{self.current_epoch}.png'))
+                                os.path.join(saving_dir, f'samples_epoch_{self.current_epoch}.png'))
 
     def configure_optimizers(self):
         optim = th.optim.AdamW(
@@ -145,22 +167,19 @@ class Diffusion(LightningModule):
 def main(cfg: DictConfig):
     OmegaConf.resolve(cfg)  # resolve all string interpolation
 
-    system = Diffusion(cfg.model, cfg.training, cfg.inference)
+    system = Diffusion(cfg.models, cfg.training, cfg.inference)
     datamodule = ImageDatasets(cfg.data)
 
     trainer = Trainer(
-        accelerator='gpu',
-        num_nodes=1,
-        benchmark=True,
         callbacks=[
             callbacks.LearningRateMonitor(
                 'epoch', log_momentum=True, log_weight_decay=True),
-            PipelineCheckpoint(),
+            PipelineCheckpoint(mode='min', monitor='FID'),
             EMACallback(decay=cfg.training.ema_decay),
             callbacks.RichProgressBar()
         ],
         logger=hy.utils.instantiate(cfg.logger, _recursive_=True),
-        **OmegaConf.to_container(cfg.pl_trainer)
+        **cfg.pl_trainer
     )
     trainer.fit(system, datamodule=datamodule,
                 ckpt_path=cfg.resume_from_checkpoint
