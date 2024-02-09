@@ -10,10 +10,10 @@ import torch as th
 from torchvision import transforms, utils as tv_utils
 from lightning.pytorch import callbacks, Trainer, LightningModule
 from torchmetrics.image.fid import FrechetInceptionDistance
+from torch_ema import ExponentialMovingAverage as EMA
 
 from utils import (
     PipelineCheckpoint,
-    EMACallback,
     _fix_hydra_config_serialization,
     ConfigMixin
 )
@@ -44,15 +44,44 @@ class Diffusion(LightningModule):
         self.infer_scheduler = \
             hy.utils.instantiate(self.inference_cfg.scheduler)
 
+        self.ema = \
+            EMA(self.model.parameters(), decay=self.training_cfg.ema_decay) \
+            if self.ema_wanted else None
+
         self.fid = FrechetInceptionDistance(
             normalize=True, reset_real_features=False)
+        self.fid.requires_grad_(False)
 
         self.save_hyperparameters()
+
+    @property
+    def ema_wanted(self):
+        return self.training_cfg.ema_decay != -1
 
     def on_fit_start(self) -> None:
         for child in chain(self.children(), vars(self).values()):
             if isinstance(child, ConfigMixin):
                 _fix_hydra_config_serialization(child)
+
+    def on_save_checkpoint(self, checkpoint: dict) -> None:
+        if self.ema_wanted:
+            checkpoint['ema'] = self.ema.state_dict()
+        return super().on_save_checkpoint(checkpoint)
+
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
+        if self.ema_wanted:
+            self.ema.load_state_dict(checkpoint['ema'])
+        return super().on_load_checkpoint(checkpoint)
+
+    def on_before_zero_grad(self, optimizer) -> None:
+        if self.ema_wanted:
+            self.ema.update(self.model.parameters())
+        return super().on_before_zero_grad(optimizer)
+
+    def to(self, *args, **kwargs):
+        if self.training_cfg.ema_decay != -1:
+            self.ema.to(*args, **kwargs)
+        return super().to(*args, **kwargs)
 
     def record_real_data_for_FID(self, batch):
         if self.current_epoch == 0:
@@ -174,7 +203,6 @@ def main(cfg: DictConfig):
             callbacks.LearningRateMonitor(
                 'epoch', log_momentum=True, log_weight_decay=True),
             PipelineCheckpoint(mode='min', monitor='FID'),
-            EMACallback(decay=cfg.training.ema_decay),
             callbacks.RichProgressBar()
         ],
         logger=hy.utils.instantiate(cfg.logger, _recursive_=True),
