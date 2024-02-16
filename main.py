@@ -48,11 +48,22 @@ class Diffusion(LightningModule):
             EMA(self.model.parameters(), decay=self.training_cfg.ema_decay) \
             if self.ema_wanted else None
 
-        self.fid = FrechetInceptionDistance(
+        self._fid = FrechetInceptionDistance(
             normalize=True, reset_real_features=False)
-        self.fid.requires_grad_(False)
+        self._fid.persistent(mode=True)
+        self._fid.requires_grad_(False)
 
         self.save_hyperparameters()
+
+    @contextmanager
+    def metrics(self):
+        self._fid.reset()
+        yield self
+        self._fid.reset()
+
+    @property
+    def FID(self):
+        return self._fid.compute()
 
     @property
     def ema_wanted(self):
@@ -83,9 +94,21 @@ class Diffusion(LightningModule):
             self.ema.to(*args, **kwargs)
         return super().to(*args, **kwargs)
 
+    def record_data_for_FID(self, batch, real: bool):
+        # batch must be either list of PIL Images, ..
+        # .. or, a Tensor of shape (BxCxHxW)
+        if isinstance(batch, list):
+            batch = th.stack([to_tensor(pil_image)
+                              for pil_image in batch], 0)
+        self._fid.update(batch.to(dtype=self.dtype, device=self.device),
+                         real=real)
+
+    def record_fake_data_for_FID(self, batch):
+        self.record_data_for_FID(batch, False)
+
     def record_real_data_for_FID(self, batch):
-        if self.current_epoch == 0:
-            self.fid.update(batch, real=True)
+        if self.training and self.current_epoch == 0:
+            self.record_data_for_FID(batch, True)
 
     def training_step(self, batch, batch_idx):
         clean_images = batch['images']
@@ -144,7 +167,7 @@ class Diffusion(LightningModule):
 
     def save_pretrained(self, path: str, push_to_hub: bool = False):
         self._fix_hydra_config_serialization()
-        
+
         pipe = self.pipeline()
         pipe.save_pretrained(path, safe_serialization=True,
                              push_to_hub=push_to_hub)
@@ -159,20 +182,19 @@ class Diffusion(LightningModule):
             n_per_rank / batch_size)
 
         # TODO: This may end up accummulating a little more than given 'n_samples'
-        for _ in range(n_batches_per_rank):
-            pil_images = self.sample(
-                **self.inference_cfg.pipeline_kwargs
-            )
-            images = th.stack([to_tensor(pil_image)
-                              for pil_image in pil_images], 0)
-            self.fid.update(images.to(dtype=self.dtype, device=self.device),
-                            real=False)
+        with self.metrics():
+            for _ in range(n_batches_per_rank):
+                pil_images = self.sample(
+                    **self.inference_cfg.pipeline_kwargs
+                )
+                self.record_fake_data_for_FID(pil_images)
 
-        fid = self.fid.compute()
-        self.log('FID', fid, prog_bar=True, on_epoch=True, sync_dist=True)
-        self.fid.reset()
+            self.log('FID', self.FID,
+                     prog_bar=True, on_epoch=True, sync_dist=True)
 
         if self.global_rank == 0:
+            images = th.stack([to_tensor(pil_image)
+                              for pil_image in pil_images], 0)
             image_grid = tv_utils.make_grid(images,
                                             nrow=math.ceil(batch_size ** 0.5), padding=1)
             try:
