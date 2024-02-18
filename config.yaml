@@ -1,18 +1,17 @@
 # lightning.pytorch==2.1.3
-seed_everything: true
+seed_everything: null
 
 trainer:
   accelerator: gpu
-  strategy: auto
+  strategy: ddp
   devices: -1
   num_nodes: 1
   precision: 16-mixed
-  logger: true
-  # logger:
-  #   class_path: lightning.pytorch.loggers.TensorBoardLogger
-  #   init_args:
-  #     save_dir: ./logs
-  #     name: test
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: ./logs
+      name: test
   fast_dev_run: false
   max_epochs: 3000
   min_epochs: null
@@ -109,7 +108,7 @@ model:
         steps_offset: 0
         rescale_betas_zero_snr: false
     ema_decay: 0.9999
-    batch_size: 128
+    batch_size: ${data.batch_size}
 
   inference:
     scheduler: null
@@ -120,7 +119,7 @@ model:
 
 data:
   data_dir: cifar10
-  batch_size: 64
+  batch_size: 128
   image_resolution: 32
   HF_DATASET_IMAGE_KEY: img
 

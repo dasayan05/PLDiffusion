@@ -57,10 +57,10 @@ class Diffusion(LightningModule):
                  inference: InferenceOptions,
                  ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(logger=False)
         self.hp = self.hparams  # short hand
 
-        self.model = self.hp.network
+        self.model = network
         self.train_scheduler = self.hp.training.scheduler
         self.infer_scheduler = self.hp.inference.scheduler or self.hp.training.scheduler
 
@@ -232,14 +232,16 @@ class Diffusion(LightningModule):
 
 if __name__ == '__main__':
     cli = LightningCLI(Diffusion, ImageDatasets,
-                       run=True,
-                       save_config_callback=None,
+                       parser_kwargs={
+                           'parser_mode': 'omegaconf'
+                       },
                        trainer_defaults={
                            'callbacks': [
-                               #    callbacks.LearningRateMonitor(
-                               #        'epoch', log_momentum=True, log_weight_decay=True),
-                               PipelineCheckpoint(
-                                   mode='min', monitor='FID'),
+                               callbacks.LearningRateMonitor('epoch',
+                                                             log_momentum=True,
+                                                             log_weight_decay=True),
+                               PipelineCheckpoint(mode='min',
+                                                  monitor='FID'),
                                callbacks.RichProgressBar()
                            ],
                        }
