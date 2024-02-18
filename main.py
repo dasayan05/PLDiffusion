@@ -199,7 +199,7 @@ class Diffusion(LightningModule):
     def configure_optimizers(self):
         optim = th.optim.AdamW(
             self.parameters(), lr=self.hp.training.learning_rate)
-        sched = th.optim.lr_scheduler.StepLR(optim, 1, gamma=0.99)
+        sched = th.optim.lr_scheduler.StepLR(optim, 1, gamma=0.999)
         return {
             'optimizer': optim,
             'lr_scheduler': {'scheduler': sched, 'interval': 'epoch', 'frequency': 1}
