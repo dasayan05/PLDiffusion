@@ -1,6 +1,7 @@
 from typing import Tuple, Optional, Union
 
 from diffusers.models import unet_2d
+from .openai_unet import UNetModel as OpenAIUNetModel
 
 
 class UNet2DModel(unet_2d.UNet2DModel):

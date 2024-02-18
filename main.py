@@ -38,6 +38,10 @@ class Diffusion(LightningModule):
         self.train_scheduler = self.hp.training.scheduler
         self.infer_scheduler = self.hp.inference.scheduler or self.hp.training.scheduler
 
+        # For making the UNet aware of the total training timesteps
+        # (TODO): clean this up properly; can we do it without this
+        self.model.diffusion_steps = self.train_scheduler.config.num_train_timesteps
+
         self.ema = \
             EMA(self.model.parameters(), decay=self.hp.training.ema_decay) \
             if self.ema_wanted else None
