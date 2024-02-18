@@ -1,53 +1,27 @@
-from dataclasses import dataclass
 import os
 import math
-from itertools import chain
-
-from typing import List, Optional, Union, Any
-
-import hydra as hy
-from omegaconf import DictConfig, OmegaConf
-from contextlib import contextmanager, nullcontext
+import contextlib
 
 import torch as th
 from torchvision import transforms, utils as tv_utils
-from lightning.pytorch import callbacks, Trainer, LightningModule
-from lightning.pytorch.cli import LightningCLI
-from lightning.pytorch.loggers import TensorBoardLogger
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torch_ema import ExponentialMovingAverage as EMA
 
-from utils import (
-    PipelineCheckpoint,
-    _fix_hydra_config_serialization,
-    ConfigMixin
-)
-from dm import ImageDatasets
-from core.schedulers import *
-
+from lightning.pytorch import LightningModule, cli, callbacks as cb
 from diffusers import DDPMPipeline
 from diffusers.models.modeling_utils import ModelMixin
-from diffusers.schedulers.scheduling_utils import SchedulerMixin
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+
+from dm import ImageDatasets
+from utils import (
+    PipelineCheckpoint,
+    TrainingOptions,
+    InferenceOptions
+)
 
 # some global stuff necessary for the program
 th.set_float32_matmul_precision('medium')
 to_tensor = transforms.ToTensor()
-
-
-@dataclass
-class TrainingOptions:
-    scheduler: Optional[SchedulerMixin]
-    ema_decay: float = 0.9999
-    batch_size: int = 64
-    learning_rate: float = 1.e-4
-
-
-@dataclass
-class InferenceOptions:
-    scheduler: Optional[SchedulerMixin]
-    pipeline_kwargs: Any
-    num_samples: int = 1024
 
 
 class Diffusion(LightningModule):
@@ -60,7 +34,7 @@ class Diffusion(LightningModule):
         self.save_hyperparameters(logger=False)
         self.hp = self.hparams  # short hand
 
-        self.model = network
+        self.model = self.hp.network
         self.train_scheduler = self.hp.training.scheduler
         self.infer_scheduler = self.hp.inference.scheduler or self.hp.training.scheduler
 
@@ -75,7 +49,7 @@ class Diffusion(LightningModule):
         self._fid.persistent(mode=True)
         self._fid.requires_grad_(False)
 
-    @contextmanager
+    @contextlib.contextmanager
     def metrics(self):
         self._fid.reset()
         yield self
@@ -154,10 +128,10 @@ class Diffusion(LightningModule):
     def validation_step(self, batch, batch_idx):
         return self.training_step(batch, batch_idx)
 
-    @contextmanager
+    @contextlib.contextmanager
     def maybe_ema(self):
         ema = self.ema  # The EMACallback() ensures this
-        ctx = nullcontext if ema is None else ema.average_parameters
+        ctx = contextlib.nullcontext if ema is None else ema.average_parameters
         yield ctx
 
     def sample(self, **kwargs: dict):
@@ -181,8 +155,6 @@ class Diffusion(LightningModule):
         return pipe
 
     def save_pretrained(self, path: str, push_to_hub: bool = False):
-        # self._fix_hydra_config_serialization()
-
         pipe = self.pipeline()
         pipe.save_pretrained(path, safe_serialization=True,
                              push_to_hub=push_to_hub)
@@ -231,18 +203,24 @@ class Diffusion(LightningModule):
 
 
 if __name__ == '__main__':
-    cli = LightningCLI(Diffusion, ImageDatasets,
-                       parser_kwargs={
-                           'parser_mode': 'omegaconf'
-                       },
-                       trainer_defaults={
-                           'callbacks': [
-                               callbacks.LearningRateMonitor('epoch',
-                                                             log_momentum=True,
-                                                             log_weight_decay=True),
-                               PipelineCheckpoint(mode='min',
-                                                  monitor='FID'),
-                               callbacks.RichProgressBar()
-                           ],
-                       }
-                       )
+    lr_monitor = cb.LearningRateMonitor('epoch',
+                                        log_momentum=True,
+                                        log_weight_decay=True
+                                        )
+    model_checkpointing = PipelineCheckpoint(mode='min',
+                                             monitor='FID'
+                                             )
+
+    cli.LightningCLI(Diffusion, ImageDatasets,
+                     parser_kwargs={
+                         'parser_mode': 'omegaconf'
+                     },
+                     trainer_defaults={
+                         'callbacks': [
+                             lr_monitor,
+                             model_checkpointing,
+                             cb.RichProgressBar()
+
+                         ],
+                     }
+                     )
