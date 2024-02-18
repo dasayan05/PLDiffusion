@@ -1,6 +1,9 @@
+from dataclasses import dataclass
 import os
 import math
 from itertools import chain
+
+from typing import List, Optional, Union, Any
 
 import hydra as hy
 from omegaconf import DictConfig, OmegaConf
@@ -9,6 +12,8 @@ from contextlib import contextmanager, nullcontext
 import torch as th
 from torchvision import transforms, utils as tv_utils
 from lightning.pytorch import callbacks, Trainer, LightningModule
+from lightning.pytorch.cli import LightningCLI
+from lightning.pytorch.loggers import TensorBoardLogger
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torch_ema import ExponentialMovingAverage as EMA
 
@@ -18,8 +23,11 @@ from utils import (
     ConfigMixin
 )
 from dm import ImageDatasets
+from core.schedulers import *
 
 from diffusers import DDPMPipeline
+from diffusers.models.modeling_utils import ModelMixin
+from diffusers.schedulers.scheduling_utils import SchedulerMixin
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 
 # some global stuff necessary for the program
@@ -27,33 +35,45 @@ th.set_float32_matmul_precision('medium')
 to_tensor = transforms.ToTensor()
 
 
+@dataclass
+class TrainingOptions:
+    scheduler: Optional[SchedulerMixin]
+    ema_decay: float = 0.9999
+    batch_size: int = 64
+    learning_rate: float = 1.e-4
+
+
+@dataclass
+class InferenceOptions:
+    scheduler: Optional[SchedulerMixin]
+    pipeline_kwargs: Any
+    num_samples: int = 1024
+
+
 class Diffusion(LightningModule):
     def __init__(self,
-                 models_cfg: DictConfig,
-                 training_cfg: DictConfig,
-                 inference_cfg: DictConfig
+                 network: ModelMixin,
+                 training: TrainingOptions,
+                 inference: InferenceOptions,
                  ):
         super().__init__()
+        self.save_hyperparameters()
+        self.hp = self.hparams  # short hand
 
-        self.training_cfg = training_cfg
-        self.inference_cfg = inference_cfg
-
-        self.model = hy.utils.instantiate(models_cfg.unet)
-        self.train_scheduler = \
-            hy.utils.instantiate(self.training_cfg.scheduler)
-        self.infer_scheduler = \
-            hy.utils.instantiate(self.inference_cfg.scheduler)
+        self.model = self.hp.network
+        self.train_scheduler = self.hp.training.scheduler
+        self.infer_scheduler = self.hp.inference.scheduler or self.hp.training.scheduler
 
         self.ema = \
-            EMA(self.model.parameters(), decay=self.training_cfg.ema_decay) \
+            EMA(self.model.parameters(), decay=self.hp.training.ema_decay) \
             if self.ema_wanted else None
 
         self._fid = FrechetInceptionDistance(
-            normalize=True, reset_real_features=False)
+            normalize=True,
+            reset_real_features=False
+        )
         self._fid.persistent(mode=True)
         self._fid.requires_grad_(False)
-
-        self.save_hyperparameters()
 
     @contextmanager
     def metrics(self):
@@ -67,12 +87,7 @@ class Diffusion(LightningModule):
 
     @property
     def ema_wanted(self):
-        return self.training_cfg.ema_decay != -1
-
-    def _fix_hydra_config_serialization(self) -> None:
-        for child in chain(self.children(), vars(self).values()):
-            if isinstance(child, ConfigMixin):
-                _fix_hydra_config_serialization(child)
+        return self.hp.training.ema_decay != -1
 
     def on_save_checkpoint(self, checkpoint: dict) -> None:
         if self.ema_wanted:
@@ -90,7 +105,7 @@ class Diffusion(LightningModule):
         return super().on_before_zero_grad(optimizer)
 
     def to(self, *args, **kwargs):
-        if self.training_cfg.ema_decay != -1:
+        if self.ema_wanted:
             self.ema.to(*args, **kwargs)
         return super().to(*args, **kwargs)
 
@@ -166,18 +181,18 @@ class Diffusion(LightningModule):
         return pipe
 
     def save_pretrained(self, path: str, push_to_hub: bool = False):
-        self._fix_hydra_config_serialization()
+        # self._fix_hydra_config_serialization()
 
         pipe = self.pipeline()
         pipe.save_pretrained(path, safe_serialization=True,
                              push_to_hub=push_to_hub)
 
     def on_validation_epoch_end(self) -> None:
-        batch_size = self.inference_cfg.pipeline_kwargs.get(
-            'batch_size', self.training_cfg.batch_size * 2)
+        batch_size = self.hp.inference.pipeline_kwargs.get(
+            'batch_size', self.hp.training.batch_size * 2)
 
         n_per_rank = math.ceil(
-            self.inference_cfg.num_samples / self.trainer.world_size)
+            self.hp.inference.num_samples / self.trainer.world_size)
         n_batches_per_rank = math.ceil(
             n_per_rank / batch_size)
 
@@ -185,7 +200,7 @@ class Diffusion(LightningModule):
         with self.metrics():
             for _ in range(n_batches_per_rank):
                 pil_images = self.sample(
-                    **self.inference_cfg.pipeline_kwargs
+                    **self.hp.inference.pipeline_kwargs
                 )
                 self.record_fake_data_for_FID(pil_images)
 
@@ -207,7 +222,7 @@ class Diffusion(LightningModule):
 
     def configure_optimizers(self):
         optim = th.optim.AdamW(
-            self.parameters(), lr=self.training_cfg.learning_rate)
+            self.parameters(), lr=self.hp.training.learning_rate)
         sched = th.optim.lr_scheduler.StepLR(optim, 1, gamma=0.99)
         return {
             'optimizer': optim,
@@ -215,27 +230,17 @@ class Diffusion(LightningModule):
         }
 
 
-@hy.main(version_base=None, config_path='./configs')
-def main(cfg: DictConfig):
-    OmegaConf.resolve(cfg)  # resolve all string interpolation
-
-    system = Diffusion(cfg.models, cfg.training, cfg.inference)
-    datamodule = ImageDatasets(cfg.data)
-
-    trainer = Trainer(
-        callbacks=[
-            callbacks.LearningRateMonitor(
-                'epoch', log_momentum=True, log_weight_decay=True),
-            PipelineCheckpoint(mode='min', monitor='FID'),
-            callbacks.RichProgressBar()
-        ],
-        logger=hy.utils.instantiate(cfg.logger, _recursive_=True),
-        **cfg.pl_trainer
-    )
-    trainer.fit(system, datamodule=datamodule,
-                ckpt_path=cfg.resume_from_checkpoint
-                )
-
-
 if __name__ == '__main__':
-    main()
+    cli = LightningCLI(Diffusion, ImageDatasets,
+                       run=True,
+                       save_config_callback=None,
+                       trainer_defaults={
+                           'callbacks': [
+                               #    callbacks.LearningRateMonitor(
+                               #        'epoch', log_momentum=True, log_weight_decay=True),
+                               PipelineCheckpoint(
+                                   mode='min', monitor='FID'),
+                               callbacks.RichProgressBar()
+                           ],
+                       }
+                       )

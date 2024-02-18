@@ -36,20 +36,21 @@ def load_hf_dataset(path_or_reponame: str, **kwargs):
 
 class ImageDatasets(LightningDataModule):
 
-    def __init__(self, cfg_data: DictConfig) -> None:
+    def __init__(self,
+                 data_dir: str,
+                 batch_size: int = 64,
+                 image_resolution: int = 32,
+                 HF_DATASET_IMAGE_KEY: str = 'img'
+                 ) -> None:
         super().__init__()
-
-        self.batch_size = cfg_data.batch_size
-        self.data_dir = cfg_data.data_dir
-        self.image_resolution = cfg_data.image_resolution
-        self.HF_DATASET_IMAGE_KEY = cfg_data.HF_DATASET_IMAGE_KEY
+        self.save_hyperparameters()
 
         # Preprocessing the datasets and DataLoaders creation.
         self.augmentations = Compose(
             [
-                Resize(self.image_resolution,
+                Resize(self.hparams.image_resolution,
                        interpolation=InterpolationMode.BILINEAR),
-                CenterCrop(self.image_resolution),
+                CenterCrop(self.hparams.image_resolution),
                 RandomHorizontalFlip(),
                 ToTensor(),
                 Normalize([0.5], [0.5]),
@@ -57,7 +58,7 @@ class ImageDatasets(LightningDataModule):
         )
 
     def setup(self, stage: str) -> None:
-        dataset = load_hf_dataset(self.data_dir)
+        dataset = load_hf_dataset(self.hparams.data_dir)
         dataset.set_transform(
             lambda sample: ImageDatasets._transforms(self, sample)
         )
@@ -70,7 +71,7 @@ class ImageDatasets(LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
-                          batch_size=self.batch_size,
+                          batch_size=self.hparams.batch_size,
                           shuffle=True,
                           num_workers=4,
                           pin_memory=True,
@@ -79,7 +80,7 @@ class ImageDatasets(LightningDataModule):
 
     def val_dataloader(self):
         return DataLoader(self.valid_dataset,
-                          batch_size=self.batch_size,
+                          batch_size=self.hparams.batch_size,
                           shuffle=False,
                           num_workers=4,
                           pin_memory=True,
@@ -89,6 +90,6 @@ class ImageDatasets(LightningDataModule):
     def _transforms(self, sample):
         images = [
             self.augmentations(image.convert("RGB"))
-            for image in sample[self.HF_DATASET_IMAGE_KEY]
+            for image in sample[self.hparams.HF_DATASET_IMAGE_KEY]
         ]
         return {"images": images}
