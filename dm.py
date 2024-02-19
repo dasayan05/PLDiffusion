@@ -43,13 +43,14 @@ class ImageDatasets(LightningDataModule):
                  ) -> None:
         super().__init__()
         self.save_hyperparameters()
+        self.hp = self.hparams
 
         # Preprocessing the datasets and DataLoaders creation.
         self.augmentations = Compose(
             [
-                Resize(self.hparams.image_resolution,
+                Resize(self.hp.image_resolution,
                        interpolation=InterpolationMode.BILINEAR),
-                CenterCrop(self.hparams.image_resolution),
+                CenterCrop(self.hp.image_resolution),
                 RandomHorizontalFlip(),
                 ToTensor(),
                 Normalize([0.5], [0.5]),
@@ -57,7 +58,7 @@ class ImageDatasets(LightningDataModule):
         )
 
     def setup(self, stage: str) -> None:
-        dataset = load_hf_dataset(self.hparams.data_dir)
+        dataset = load_hf_dataset(self.hp.data_dir)
         dataset.set_transform(
             lambda sample: ImageDatasets._transforms(self, sample)
         )
@@ -70,7 +71,7 @@ class ImageDatasets(LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
-                          batch_size=self.hparams.batch_size,
+                          batch_size=self.hp.batch_size,
                           shuffle=True,
                           num_workers=4,
                           pin_memory=True,
@@ -79,7 +80,7 @@ class ImageDatasets(LightningDataModule):
 
     def val_dataloader(self):
         return DataLoader(self.valid_dataset,
-                          batch_size=self.hparams.batch_size,
+                          batch_size=self.hp.batch_size,
                           shuffle=False,
                           num_workers=4,
                           pin_memory=True,
@@ -89,6 +90,6 @@ class ImageDatasets(LightningDataModule):
     def _transforms(self, sample):
         images = [
             self.augmentations(image.convert("RGB"))
-            for image in sample[self.hparams.HF_DATASET_IMAGE_KEY]
+            for image in sample[self.hp.HF_DATASET_IMAGE_KEY]
         ]
         return {"images": images}
