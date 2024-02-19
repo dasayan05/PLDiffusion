@@ -1,6 +1,7 @@
 import os
 import math
 import contextlib
+from tqdm import trange
 
 import torch as th
 from torchvision import transforms, utils as tv_utils
@@ -174,7 +175,8 @@ class Diffusion(LightningModule):
 
         # TODO: This may end up accummulating a little more than given 'n_samples'
         with self.metrics():
-            for _ in range(n_batches_per_rank):
+            for _ in trange(n_batches_per_rank,
+                            desc='FID', disable=self.global_rank != 0):
                 pil_images = self.sample(
                     **self.hp.inference.pipeline_kwargs
                 )
@@ -223,7 +225,7 @@ if __name__ == '__main__':
                          'callbacks': [
                              lr_monitor,
                              model_checkpointing,
-                             cb.RichProgressBar()
+                             cb.TQDMProgressBar()
 
                          ],
                      }
