@@ -165,8 +165,7 @@ class Diffusion(LightningModule):
                              push_to_hub=push_to_hub)
 
     def on_validation_epoch_end(self) -> None:
-        batch_size = self.hp.inference.pipeline_kwargs.get(
-            'batch_size', self.hp.training.batch_size * 2)
+        batch_size = self.hp.inference.pipeline_kwargs.get('batch_size', 128)
 
         n_per_rank = math.ceil(
             self.hp.inference.num_samples / self.trainer.world_size)

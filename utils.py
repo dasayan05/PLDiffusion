@@ -10,7 +10,6 @@ from diffusers.schedulers.scheduling_utils import SchedulerMixin
 class TrainingOptions:
     scheduler: Optional[SchedulerMixin]
     ema_decay: float = 0.9999
-    batch_size: int = 64
     learning_rate: float = 1.e-4
 
 

@@ -1,0 +1,5 @@
+logger:
+  class_path: lightning.pytorch.loggers.TensorBoardLogger
+  init_args:
+    save_dir: ./logs
+    name: test
