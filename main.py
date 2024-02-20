@@ -1,7 +1,7 @@
 import os
 import math
 import contextlib
-from tqdm import trange
+from tqdm import tqdm
 
 import torch as th
 from torchvision import transforms, utils as tv_utils
@@ -169,20 +169,23 @@ class Diffusion(LightningModule):
 
         n_per_rank = math.ceil(
             self.hp.inference.num_samples / self.trainer.world_size)
-        n_batches_per_rank = math.ceil(
-            n_per_rank / batch_size)
+        n_batches_per_rank = math.ceil(n_per_rank / batch_size)
+
+        sampling_pbar = tqdm(total=n_batches_per_rank, desc='Sampling',
+                             disable=self.global_rank != 0)
 
         # TODO: This may end up accummulating a little more than given 'n_samples'
         with self.metrics():
-            for _ in trange(n_batches_per_rank,
-                            desc='FID', disable=self.global_rank != 0):
+            for b in range(n_batches_per_rank):
                 pil_images = self.sample(
                     **self.hp.inference.pipeline_kwargs
                 )
                 self.record_fake_data_for_FID(pil_images)
+                sampling_pbar.update(b + 1)
+            fid = self.FID  # computation and sync happens here
 
-            self.log('FID', self.FID,
-                     prog_bar=True, on_epoch=True, sync_dist=True)
+            sampling_pbar.set_postfix({'FID': fid.item()})
+            self.log('FID', fid, prog_bar=True, on_epoch=True, sync_dist=True)
 
         if self.global_rank == 0:
             images = th.stack([to_tensor(pil_image)
