@@ -18,7 +18,7 @@ training:
       steps_offset: 0
       rescale_betas_zero_snr: false
   ema_decay: 0.9999
-  learning_rate: 1.2e-4
+  learning_rate: 1.0e-4
 
 inference:
   scheduler: null
