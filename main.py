@@ -5,7 +5,6 @@ from tqdm import tqdm
 
 import torch as th
 from torchvision import transforms, utils as tv_utils
-from torchmetrics.image.fid import FrechetInceptionDistance
 from torch_ema import ExponentialMovingAverage as EMA
 
 from lightning.pytorch import LightningModule, cli, callbacks as cb
@@ -14,6 +13,7 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 
 from dm import ImageDatasets
+from metrics import Metrics
 from utils import (
     PipelineCheckpoint,
     TrainingOptions,
@@ -47,22 +47,7 @@ class Diffusion(LightningModule):
             EMA(self.model.parameters(), decay=self.hp.training.ema_decay) \
             if self.ema_wanted else None
 
-        self._fid = FrechetInceptionDistance(
-            normalize=True,
-            reset_real_features=False
-        )
-        self._fid.persistent(mode=True)
-        self._fid.requires_grad_(False)
-
-    @contextlib.contextmanager
-    def metrics(self):
-        self._fid.reset()
-        yield self
-        self._fid.reset()
-
-    @property
-    def FID(self):
-        return self._fid.compute()
+        self.metrics = Metrics(vFID=True)
 
     @property
     def ema_wanted(self):
@@ -86,28 +71,13 @@ class Diffusion(LightningModule):
     def to(self, *args, **kwargs):
         if self.ema_wanted:
             self.ema.to(*args, **kwargs)
+        self.metrics.to(*args, **kwargs)
         return super().to(*args, **kwargs)
-
-    def record_data_for_FID(self, batch, real: bool):
-        # batch must be either list of PIL Images, ..
-        # .. or, a Tensor of shape (BxCxHxW)
-        if isinstance(batch, list):
-            batch = th.stack([to_tensor(pil_image)
-                              for pil_image in batch], 0)
-        self._fid.update(batch.to(dtype=self.dtype, device=self.device),
-                         real=real)
-
-    def record_fake_data_for_FID(self, batch):
-        self.record_data_for_FID(batch, False)
-
-    def record_real_data_for_FID(self, batch):
-        if self.training and self.current_epoch == 0:
-            self.record_data_for_FID(batch, True)
 
     def training_step(self, batch, batch_idx):
         clean_images = batch['images']
 
-        self.record_real_data_for_FID((clean_images + 1) / 2.)
+        self.metrics.record_real_data_for_FID((clean_images + 1) / 2.)
 
         noise = th.randn_like(clean_images)
         timesteps = th.randint(
@@ -131,6 +101,9 @@ class Diffusion(LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        clean_images = batch['images']
+        self.metrics.record_real_data_for_vFID((clean_images + 1.) / 2.)
+
         return self.training_step(batch, batch_idx)
 
     @contextlib.contextmanager
@@ -175,17 +148,20 @@ class Diffusion(LightningModule):
                              disable=self.global_rank != 0)
 
         # TODO: This may end up accummulating a little more than given 'n_samples'
-        with self.metrics():
+        with self.metrics.metrics() as m:
             for b in range(n_batches_per_rank):
                 pil_images = self.sample(
                     **self.hp.inference.pipeline_kwargs
                 )
-                self.record_fake_data_for_FID(pil_images)
-                sampling_pbar.update(b + 1)
-            fid = self.FID  # computation and sync happens here
+                m.record_fake_data(pil_images)
+                sampling_pbar.update(1)
 
-            sampling_pbar.set_postfix({'FID': fid.item()})
-            self.log('FID', fid, prog_bar=True, on_epoch=True, sync_dist=True)
+            met = {'FID': m.FID.item(), 'vFID': m.vFID.item()}
+
+            sampling_pbar.set_postfix(met)
+            self.log_dict(met, prog_bar=True, on_epoch=True, sync_dist=True)
+
+        sampling_pbar.close()
 
         if self.global_rank == 0:
             images = th.stack([to_tensor(pil_image)
