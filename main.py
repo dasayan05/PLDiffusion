@@ -117,6 +117,7 @@ class Diffusion(LightningModule):
         kwargs.pop('return_dict', False)
 
         pipe = self.pipeline()
+        pipe.set_progress_bar_config(disable=True)
 
         with self.maybe_ema():
             images, = pipe(
@@ -129,7 +130,6 @@ class Diffusion(LightningModule):
     def pipeline(self) -> DiffusionPipeline:
         pipe = DDPMPipeline(self.model, self.infer_scheduler).to(
             device=self.device, dtype=self.dtype)  # .to() isn't necessary
-        pipe.set_progress_bar_config(disable=True)
         return pipe
 
     def save_pretrained(self, path: str, push_to_hub: bool = False):
@@ -149,7 +149,7 @@ class Diffusion(LightningModule):
 
         # TODO: This may end up accummulating a little more than given 'n_samples'
         with self.metrics.metrics() as m:
-            for b in range(n_batches_per_rank):
+            for _ in range(n_batches_per_rank):
                 pil_images = self.sample(
                     **self.hp.inference.pipeline_kwargs
                 )
@@ -158,10 +158,7 @@ class Diffusion(LightningModule):
 
             met = {'FID': m.FID.item(), 'vFID': m.vFID.item()}
 
-            sampling_pbar.set_postfix(met)
             self.log_dict(met, prog_bar=True, on_epoch=True, sync_dist=True)
-
-        sampling_pbar.close()
 
         if self.global_rank == 0:
             images = th.stack([to_tensor(pil_image)
