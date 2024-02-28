@@ -48,9 +48,8 @@ class ImageDatasets(LightningDataModule):
         # Preprocessing the datasets and DataLoaders creation.
         self.augmentations = Compose(
             [
-                Resize(self.hp.image_resolution,
+                Resize((self.hp.image_resolution, self.hp.image_resolution),
                        interpolation=InterpolationMode.BILINEAR),
-                CenterCrop(self.hp.image_resolution),
                 RandomHorizontalFlip(),
                 ToTensor(),
                 Normalize([0.5], [0.5]),
