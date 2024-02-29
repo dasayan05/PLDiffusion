@@ -7,7 +7,7 @@ import torch as th
 from torchvision import transforms, utils as tv_utils
 from torch_ema import ExponentialMovingAverage as EMA
 
-from lightning.pytorch import LightningModule, cli, callbacks as cb
+from lightning.pytorch import LightningModule, cli
 from diffusers import DDPMPipeline
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
@@ -15,7 +15,6 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from dm import ImageDatasets
 from metrics import Metrics
 from utils import (
-    PipelineCheckpoint,
     TrainingOptions,
     InferenceOptions
 )
@@ -184,24 +183,8 @@ class Diffusion(LightningModule):
 
 
 if __name__ == '__main__':
-    lr_monitor = cb.LearningRateMonitor('epoch',
-                                        log_momentum=True,
-                                        log_weight_decay=True
-                                        )
-    model_checkpointing = PipelineCheckpoint(mode='min',
-                                             monitor='FID'
-                                             )
-
     cli.LightningCLI(Diffusion, ImageDatasets,
                      parser_kwargs={
                          'parser_mode': 'omegaconf'
-                     },
-                     trainer_defaults={
-                         'callbacks': [
-                             lr_monitor,
-                             model_checkpointing,
-                             cb.TQDMProgressBar()
-
-                         ],
                      }
                      )

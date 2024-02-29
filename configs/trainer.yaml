@@ -1,3 +1,18 @@
+callbacks:
+  -
+    class_path: lightning.pytorch.callbacks.LearningRateMonitor
+    init_args:
+      logging_interval: epoch
+      log_momentum: false
+      log_weight_decay: true
+  -
+    class_path: utils.PipelineCheckpoint
+    init_args:
+      mode: min
+      monitor: FID
+  -
+    class_path: lightning.pytorch.callbacks.TQDMProgressBar
+
 accelerator: gpu
 strategy: ddp
 devices: -1
