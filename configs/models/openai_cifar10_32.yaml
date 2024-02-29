@@ -1,19 +1,21 @@
-network:
-  class_path: core.models.OpenAIUNetModel
-  init_args:
-    sample_size: 32
-    in_channels: 3
-    model_channels: 128
-    out_channels: 3
-    num_res_blocks: 3
-    attention_resolutions: "16,8"
-    dropout: 0.3
-    channel_mult: ""
-    num_classes: null
-    num_heads: 4
-    num_head_channels: -1
-    num_heads_upsample: -1
-    use_scale_shift_norm: true
-    resblock_updown: false
-    use_new_attention_order: false
-    time_embedding_type: positional
+class_path: core.modules.Unconditional
+init_args:
+  network:
+    class_path: core.models.OpenAIUNetModel
+    init_args:
+      sample_size: 32
+      in_channels: 3
+      model_channels: 128
+      out_channels: 3
+      num_res_blocks: 3
+      attention_resolutions: "16,8"
+      dropout: 0.3
+      channel_mult: ""
+      num_classes: null
+      num_heads: 4
+      num_head_channels: -1
+      num_heads_upsample: -1
+      use_scale_shift_norm: true
+      resblock_updown: false
+      use_new_attention_order: false
+      time_embedding_type: positional
