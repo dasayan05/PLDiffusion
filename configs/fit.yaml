@@ -25,6 +25,9 @@ init_args:
   inference:
     scheduler: null
     num_samples: 1024
+    metrics:
+      FID: false
+      vFID: false
     pipeline_kwargs:
       batch_size: 256
       num_inference_steps: 1000

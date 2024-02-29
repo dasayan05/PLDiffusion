@@ -44,7 +44,10 @@ class Unconditional(Diffusion):
             EMA(self.model.parameters(), decay=self.hp.training.ema_decay) \
             if self.ema_wanted else None
 
-        self.metrics = Metrics(vFID=True)
+        self.metrics = Metrics(
+            FID=self.hp.inference.metrics.FID,
+            vFID=self.hp.inference.metrics.vFID
+        )
 
     @property
     def ema_wanted(self):

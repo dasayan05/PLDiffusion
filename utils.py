@@ -14,10 +14,17 @@ class TrainingOptions:
 
 
 @dataclass
+class Metrics:
+    FID: bool
+    vFID: bool
+
+
+@dataclass
 class InferenceOptions:
     scheduler: Optional[SchedulerMixin]
     pipeline_kwargs: Any
     num_samples: int = 1024
+    metrics: Metrics = Metrics(FID=True, vFID=False)
 
 
 class PipelineCheckpoint(callbacks.ModelCheckpoint):
