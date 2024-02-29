@@ -17,20 +17,23 @@ class Metrics(th.nn.Module):
 
     def __init__(self,
                  feature: int = 2048,
+                 FID: bool = True,
                  vFID: bool = False) -> None:
         super().__init__()
+        self.is_FID = FID
         self.is_vFID = vFID
 
         self.inceptionv3 = NoTrainInceptionV3("inception-v3-compat",
                                               features_list=[str(feature)])
 
-        self._fid = FID(
-            feature=self.inceptionv3,
-            reset_real_features=False,
-            normalize=True
-        )
-        self._fid.persistent(True)
-        self._fid.requires_grad_(False)
+        if self.is_FID:
+            self._fid = FID(
+                feature=self.inceptionv3,
+                reset_real_features=False,
+                normalize=True
+            )
+            self._fid.persistent(True)
+            self._fid.requires_grad_(False)
 
         if self.is_vFID:
             self._vfid = FID(
@@ -47,19 +50,25 @@ class Metrics(th.nn.Module):
 
     @contextmanager
     def metrics(self):
-        self._fid.reset()
+        if self.is_FID:
+            self._fid.reset()
         if self.is_vFID:
             self._vfid.reset()
 
         yield self
 
-        self._fid.reset()
+        if self.is_FID:
+            self._fid.reset()
         if self.is_vFID:
             self._vfid.reset()
 
     @property
     def FID(self):
-        return self._fid.compute()
+        if self.is_FID:
+            return self._fid.compute()
+        else:
+            # meaning it's disabled
+            return th.tensor(-1.)
 
     @property
     def vFID(self):
@@ -71,7 +80,10 @@ class Metrics(th.nn.Module):
 
     @property
     def n_real_FID(self):
-        return self._fid.metric_state['real_features_num_samples']
+        if self.is_FID:
+            return self._fid.metric_state['real_features_num_samples']
+        else:
+            return float('inf')
 
     @property
     def n_real_vFID(self):
@@ -94,15 +106,17 @@ class Metrics(th.nn.Module):
         fid.update(batch, real=real)
 
     def record_fake_data(self, batch):
-        self.record_fake_data_for_FID(batch)
+        if self.is_FID:
+            self.record_fake_data_for_FID(batch)
         if self.is_vFID:
             self.record_fake_data_for_vFID(batch)
 
     def record_fake_data_for_FID(self, batch):
-        self.record_data(self._fid, batch, False)
+        if self.is_FID:
+            self.record_data(self._fid, batch, False)
 
     def record_real_data_for_FID(self, batch, upto: int = 50000):
-        if self.n_real_FID < upto:
+        if self.n_real_FID < upto and self.is_FID:
             self.record_data(self._fid, batch, True)
 
     def record_fake_data_for_vFID(self, batch):
