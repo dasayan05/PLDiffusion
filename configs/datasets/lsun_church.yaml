@@ -1,0 +1,4 @@
+data_dir: "tglcourse/lsun_church_train"
+batch_size: 64
+image_resolution: 64
+HF_DATASET_IMAGE_KEY: "image"
