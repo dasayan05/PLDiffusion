@@ -1,8 +1,9 @@
 import os
+from typing import Tuple
 
 from torch.utils.data import DataLoader
 from torchvision.transforms import (
-    CenterCrop,
+    Grayscale,
     Compose,
     InterpolationMode,
     Normalize,
@@ -35,26 +36,26 @@ def load_hf_dataset(path_or_reponame: str, **kwargs):
 
 class ImageDatasets(LightningDataModule):
 
+    GLOBAL_AUGMENTATIONS = {
+        'RandomHorizontalFlip': RandomHorizontalFlip,
+        'Grayscale': Grayscale
+    }
+
     def __init__(self,
                  data_dir: str,
                  batch_size: int = 64,
                  image_resolution: int = 32,
+                 augmentations: Tuple[str, ...] = (
+                     'RandomHorizontalFlip',
+                     'Grayscale'
+                 ),
                  HF_DATASET_IMAGE_KEY: str = 'img'
                  ) -> None:
         super().__init__()
         self.save_hyperparameters()
         self.hp = self.hparams
 
-        # Preprocessing the datasets and DataLoaders creation.
-        self.augmentations = Compose(
-            [
-                Resize((self.hp.image_resolution, self.hp.image_resolution),
-                       interpolation=InterpolationMode.BILINEAR),
-                RandomHorizontalFlip(),
-                ToTensor(),
-                Normalize([0.5], [0.5]),
-            ]
-        )
+        self._augmentation()
 
     def setup(self, stage: str) -> None:
         dataset = load_hf_dataset(self.hp.data_dir)
@@ -85,6 +86,22 @@ class ImageDatasets(LightningDataModule):
                           pin_memory=True,
                           drop_last=False
                           )
+
+    def _augmentation(self):
+        aug_list = [  # necessary one
+            Resize((self.hp.image_resolution, self.hp.image_resolution),
+                   interpolation=InterpolationMode.BILINEAR),
+        ]
+        for aug in self.hp.augmentations:  # user provided one
+            aug_list.append(
+                ImageDatasets.GLOBAL_AUGMENTATIONS[aug]()
+            )
+        aug_list.extend([  # necessary ones
+            ToTensor(),
+            Normalize([0.5], [0.5]),
+        ])
+        # Preprocessing the datasets and DataLoaders creation.
+        self.augmentations = Compose(aug_list)
 
     def _transforms(self, sample):
         images = [
